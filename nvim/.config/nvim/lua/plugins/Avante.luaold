@@ -1,0 +1,162 @@
+return {
+  {
+    "olimorris/codecompanion.nvim",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "nvim-treesitter/nvim-treesitter",
+    },
+    config = function()
+      require("codecompanion").setup({
+        strategies = {
+          chat = { adapter = "ollama" },
+          inline = { adapter = "ollama" },
+        },
+        adapters = {
+          ollama = function()
+            return require("codecompanion.adapters").extend("ollama", {
+              schema = {
+                model = {
+                  -- Ensure this model exists in `ollama list`
+                  default = "qwen3:14b",
+                },
+              },
+            })
+          end,
+        },
+        extensions = {
+          mcphub = {
+            callback = "mcphub.extensions.codecompanion",
+            opts = {
+              show_result_in_chat = true,
+              make_vars = true,
+              make_slash_commands = true,
+            },
+          },
+        },
+      })
+    end,
+  },
+
+  {
+    "ravitemer/mcphub.nvim",
+    dependencies = { "nvim-lua/plenary.nvim" },
+    build = "npm install -g mcp-hub@latest",
+    config = function()
+      require("mcphub").setup()
+    end,
+  },
+
+  {
+    "yetone/avante.nvim",
+    event = "VeryLazy",
+    lazy = false,
+    version = false,
+    opts = {
+      -- 1. Set the main provider to ollama
+      provider = "ollama",
+
+      -- 2. Optional: Use ollama for auto-suggestions (typing ghost text)
+      auto_suggestions_provider = "ollama",
+
+      -- 3. STRICT WIKI CONFIGURATION
+      providers = {
+        ollama = {
+          -- Native Ollama Endpoint (No /v1)
+          endpoint = "http://127.0.0.1:11434",
+          -- IMPORTANT: Ensure this matches `ollama list` exactly.
+          -- "qwen3" is likely a typo for "qwen2.5" unless you made a custom modelfile.
+          model = "qwen3:14b",
+          is_env_set = function()
+            return true
+          end,
+
+          timeout = 30000,
+
+          -- As per the new Wiki migration guide:
+          -- All body parameters must go into 'extra_request_body'
+          extra_request_body = {
+            options = {
+              num_ctx = 8192, -- 14B model fits this easily on your 3080
+              temperature = 0,
+            },
+          },
+        },
+        aihubmix = {
+          endpoint = "",
+          model = "",
+          api_key_name = "",
+        },
+      },
+
+      file_selector = {
+        provider = "snacks",
+        provider_opts = {},
+      },
+      behaviour = {
+        auto_suggestions = false,
+        auto_set_highlight_group = true,
+        auto_set_keymaps = true,
+        auto_apply_diff_after_generation = false,
+        support_paste_from_clipboard = true,
+      },
+    },
+    build = "make",
+    dependencies = {
+      "nvim-treesitter/nvim-treesitter",
+      "stevearc/dressing.nvim",
+      "nvim-lua/plenary.nvim",
+      "MunifTanjim/nui.nvim",
+      "nvim-mini/mini.pick",
+      "nvim-telescope/telescope.nvim",
+      "hrsh7th/nvim-cmp",
+      "ibhagwan/fzf-lua",
+      "nvim-tree/nvim-web-devicons",
+      "Kaiser-Yang/blink-cmp-avante",
+      {
+        "saghen/blink.cmp",
+        lazy = true,
+        opts = {
+          sources = {
+            default = { "avante" },
+            providers = {
+              avante = {
+                module = "blink-cmp-avante",
+                name = "Avante",
+                opts = { comp_source = "avante_mentions" },
+              },
+            },
+          },
+        },
+      },
+      {
+        "HakonHarnes/img-clip.nvim",
+        event = "VeryLazy",
+        opts = {
+          default = {
+            embed_image_as_base64 = false,
+            prompt_for_file_name = false,
+            drag_and_drop = { insert_mode = true },
+            use_absolute_path = true,
+          },
+        },
+      },
+      {
+        "MeanderingProgrammer/render-markdown.nvim",
+        opts = { file_types = { "markdown", "Avante" } },
+        ft = { "markdown", "Avante" },
+      },
+    },
+    config = function(_, opts)
+      opts.system_prompt = function()
+        local hub = require("mcphub").get_hub_instance()
+        return hub and hub:get_active_servers_prompt() or ""
+      end
+
+      opts.custom_tools = function()
+        return { require("mcphub.extensions.avante").mcp_tool() }
+      end
+
+      require("avante").setup(opts)
+    end,
+  },
+}

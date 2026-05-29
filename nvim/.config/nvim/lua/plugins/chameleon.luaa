@@ -1,0 +1,33 @@
+return {
+  "JunaidQrysh/chameleon.nvim",
+  dependencies = { "nvzone/volt", "nvim-lua/plenary.nvim" },
+  priority = 1000,
+  event = "VeryLazy",
+  config = function()
+    vim.b.base46_cache = vim.fn.stdpath("cache") .. "/base46/"
+
+    -- Load all highlights(integrations)
+    for _, file in ipairs(vim.fn.readdir(vim.g.base46_cache)) do
+      dofile(vim.g.base46_cache .. file)
+    end
+
+    -- OR load specific highlights
+    dofile(vim.g.base46_cache .. "defaults")
+    dofile(vim.g.base46_cache .. "syntax")
+
+    -- Theme switcher
+    vim.keymap.set("n", "<leader>th", function()
+      require("tswitch").open()
+    end, { desc = "Theme Switcher" })
+
+    -- HyDE integration
+    vim.keymap.set("n", "<leader>tH", function()
+      require("chameleon.hyprdots").toggle_hyde()
+    end, { desc = "Toggle-Hyde" })
+
+    -- Transparency toggle
+    vim.keymap.set("n", "<leader>tT", function()
+      require("base46").toggle_transparency()
+    end, { desc = "Toggle Transparency" })
+  end,
+}

@@ -1,0 +1,532 @@
+local status_ok, Path = pcall(require, "plenary.path")
+if not status_ok then
+  vim.notify("Obsidian.nvim config: Plenary.nvim not found!", vim.log.levels.ERROR)
+  return
+end
+
+-- =======================================================
+-- SYSTEM DEPENDENCY CHECKS
+-- =======================================================
+if vim.fn.executable("rg") == 0 then
+  vim.notify("Obsidian.nvim: 'ripgrep' (rg) is not installed! Search & Completion will be slow.", vim.log.levels.WARN)
+end
+
+-- =======================================================
+-- CENTRALIZED CONFIGURATION
+-- =======================================================
+local VAULT_PATH = "/home/red_monarch/Documents/Synchornize/Kyrus-Pan-Amor"
+local DAILY_NOTES_FOLDER = "Calendar"
+local IMG_FOLDER = "Atlas/Utilities/Image"
+local TEMPLATES_FOLDER = "Atlas/Utilities/Templates"
+local NOTES_SUBDIR = "SeedBox 🌻"
+
+-- =======================================================
+-- HELPER FUNCTIONS (Shared Logic)
+-- =======================================================
+
+-- 1. SAFE OPEN FUNCTION
+local function safe_open_note(path_str)
+  if not path_str or path_str == "" then
+    return
+  end
+
+  -- Clean newlines and potential ANSI colors from rg output
+  local clean_path = path_str:gsub("[\r\n]", ""):gsub("\27%[[0-9;]*m", "")
+
+  -- Resolve to absolute path
+  local abs_path = vim.fn.fnamemodify(clean_path, ":p")
+
+  -- Use bufadd to create the buffer handle from the raw string
+  local bufnr = vim.fn.bufadd(abs_path)
+
+  if bufnr ~= 0 then
+    -- Ensure the buffer is listed
+    vim.api.nvim_buf_set_option(bufnr, "buflisted", true)
+    -- Switch the current window to this buffer
+    vim.api.nvim_set_current_buf(bufnr)
+  else
+    vim.notify("Obsidian: Failed to create buffer for " .. abs_path, vim.log.levels.ERROR)
+  end
+end
+
+-- 2. FIND EXISTING NOTE
+local function find_existing_note_path(name)
+  if not name or name == "" then
+    return nil
+  end
+
+  -- --no-ignore and --hidden ensure we find archived/hidden notes
+  local cmd = "rg --files --ignore-case --no-ignore --hidden --glob "
+    .. vim.fn.shellescape("**/" .. name .. ".md")
+    .. " "
+    .. vim.fn.shellescape(VAULT_PATH)
+    .. " | head -n 1"
+
+  local handle = io.popen(cmd)
+  if handle then
+    local result = handle:read("*a")
+    handle:close()
+    if result and result ~= "" then
+      return result:gsub("[\r\n]", "")
+    end
+  end
+  return nil
+end
+
+return {
+  "epwalsh/obsidian.nvim",
+  version = "*",
+  lazy = true,
+
+  -- 🔥 CRITICAL FIX: SWITCH TO FILETYPE LOADING
+  ft = "markdown",
+
+  cmd = {
+    "ObsidianNew",
+    "ObsidianSearch",
+    "ObsidianQuickSwitch",
+    "ObsidianFollowLink",
+    "ObsidianBacklinks",
+    "ObsidianTags",
+    "ObsidianToday",
+    "ObsidianYesterday",
+    "ObsidianTomorrow",
+    "ObsidianTemplate",
+    "ObsidianRename",
+    "ObsidianToggleCheckbox",
+    "ObsidianPasteImg",
+  },
+
+  dependencies = {
+    "nvim-lua/plenary.nvim",
+    "nvim-telescope/telescope.nvim",
+    "nvim-treesitter/nvim-treesitter",
+
+    -- BLINK MIGRATION: Added blink.cmp and blink.compat
+    "saghen/blink.cmp",
+    "saghen/blink.compat",
+  },
+
+  ui = {
+    enable = false,
+  },
+
+  keys = {
+    -- 1. ROBUST GLOBAL NEW NOTE (<leader>on)
+    {
+      "<leader>on",
+      function()
+        local cwd = vim.fn.getcwd()
+        if cwd ~= VAULT_PATH then
+          vim.api.nvim_set_current_dir(VAULT_PATH)
+        end
+
+        local title = ""
+        while true do
+          title = vim.fn.input("Enter Note Title: ")
+          if not title or title == "" then
+            vim.notify("Note creation cancelled.", vim.log.levels.INFO)
+            return
+          end
+
+          if title:match('[%c/\\?*:|"<>#%%^%[%]]') then
+            vim.notify(
+              'Invalid characters detected (avoid / \\ ? * : | " < > # % ^ [ ]). Please try again.',
+              vim.log.levels.WARN
+            )
+          else
+            break
+          end
+        end
+
+        local existing_path = find_existing_note_path(title)
+        if existing_path then
+          safe_open_note(existing_path)
+          vim.notify("Opened existing note: " .. title, vim.log.levels.INFO)
+          return
+        end
+
+        local filename = vim.trim(title)
+        if filename == "" then
+          filename = tostring(os.time())
+        end
+
+        local subdirectory = NOTES_SUBDIR
+        local full_path = Path:new(VAULT_PATH) / subdirectory / (filename .. ".md")
+
+        local buf = vim.api.nvim_create_buf(true, false)
+        vim.api.nvim_buf_set_name(buf, tostring(full_path))
+        vim.api.nvim_set_option_value("buftype", "", { buf = buf })
+        vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+
+        local count = 0
+        local cmd = "rg --files --no-ignore --glob '*.md' " .. vim.fn.shellescape(VAULT_PATH) .. " | wc -l"
+        local ok, handle = pcall(io.popen, cmd)
+        if ok and handle then
+          local result = handle:read("*a")
+          handle:close()
+          count = tonumber(result:match("%d+")) or 0
+        end
+
+        local new_alias = tostring(count + 1)
+        local today = os.date("%Y-%m-%d")
+        local now = os.date("%Y-%m-%d %H:%M")
+
+        local lines = {
+          "---",
+          "id: " .. filename,
+          "aliases:",
+          "  - " .. new_alias,
+          "tags:",
+          "  - ",
+          "date: " .. today,
+          "updated: " .. now,
+          "title: " .. title,
+          "---",
+          "",
+          "",
+        }
+
+        vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+        local success, err = pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, lines)
+        if not success then
+          vim.notify("Error writing to buffer: " .. err, vim.log.levels.ERROR)
+          return
+        end
+
+        vim.api.nvim_set_option_value("filetype", "markdown", { buf = buf })
+        vim.api.nvim_set_current_buf(buf)
+        vim.cmd("normal! G")
+        vim.notify("Created new note: " .. title, vim.log.levels.INFO)
+      end,
+      desc = "New Obsidian Note (Global)",
+    },
+
+    -- 2. SEARCH & QUICK SWITCH
+    {
+      "<leader>os",
+      function()
+        require("telescope.builtin").live_grep({ search_dirs = { VAULT_PATH }, prompt_title = "Search Vault" })
+      end,
+      desc = "Search Obsidian",
+    },
+    {
+      "<leader>oq",
+      function()
+        require("telescope.builtin").find_files({ search_dirs = { VAULT_PATH }, prompt_title = "Find Notes" })
+      end,
+      desc = "Quick Switch",
+    },
+
+    -- 3. TAG SEARCH
+    {
+      "<leader>ot",
+      function()
+        require("telescope.builtin").grep_string({
+          cwd = VAULT_PATH,
+          prompt_title = "Search Tags",
+          search = "#[a-zA-Z0-9]",
+          use_regex = true,
+        })
+      end,
+      desc = "Search Tags",
+    },
+
+    -- 5. DAILY NOTES
+    { "<leader>od", "<cmd>ObsidianToday<CR>", desc = "Today's Daily Note" },
+    { "<leader>oy", "<cmd>ObsidianYesterday<CR>", desc = "Yesterday's Daily Note" },
+    { "<leader>oT", "<cmd>ObsidianTomorrow<CR>", desc = "Tomorrow's Daily Note" },
+
+    -- 6. DELETE NOTE
+    {
+      "<leader>ox",
+      function()
+        local current_file = vim.fn.expand("%:p")
+        if current_file == "" then
+          vim.notify("Obsidian: No file associated with this buffer.", vim.log.levels.WARN)
+          return
+        end
+        local pattern = VAULT_PATH:gsub("([%-%.%+%[%]%(%)%$%^%%%?%*])", "%%%1")
+        if not string.match(current_file, pattern) then
+          vim.notify("Obsidian: Cannot delete files outside the vault.", vim.log.levels.WARN)
+          return
+        end
+        local confirm = vim.fn.input("Delete this note? (y/N): ")
+        if confirm:lower() == "y" then
+          local success, err = os.remove(current_file)
+          if success then
+            vim.cmd("bdelete!")
+            vim.notify("Obsidian: Deleted " .. current_file, vim.log.levels.INFO)
+          else
+            vim.notify("Obsidian: Failed to delete file. " .. (err or ""), vim.log.levels.ERROR)
+          end
+        else
+          vim.notify("Obsidian: Deletion cancelled.", vim.log.levels.INFO)
+        end
+      end,
+      desc = "Delete Note",
+    },
+
+    -- 7. RANDOM NOTE
+    {
+      "<leader>ov",
+      function()
+        local cmd = "find "
+          .. vim.fn.shellescape(VAULT_PATH)
+          .. " -path '*/Atlas/Utilities*' -prune -o -type f -name '*.md' -print | shuf -n 1"
+        local handle = io.popen(cmd)
+        if handle then
+          local result = handle:read("*a")
+          handle:close()
+          if result and result ~= "" then
+            safe_open_note(result)
+          end
+        end
+      end,
+      desc = "Random Note",
+    },
+
+    { "<leader>of", "<cmd>ObsidianFollowLink<CR>", desc = "Follow Link" },
+    { "<leader>ob", "<cmd>ObsidianBacklinks<CR>", desc = "Show Backlinks" },
+    { "<leader>oi", "<cmd>ObsidianTemplate<CR>", desc = "Insert Template" },
+    { "<leader>or", "<cmd>ObsidianRename<CR>", desc = "Rename Note" },
+    { "<leader>oc", "<cmd>ObsidianToggleCheckbox<CR>", desc = "Toggle Checkbox" },
+    { "<leader>op", "<cmd>ObsidianPasteImg<CR>", desc = "Paste Image" },
+  },
+
+  opts = {
+    workspaces = {
+      {
+        name = "personal",
+        path = VAULT_PATH,
+      },
+    },
+
+    new_notes_location = "notes_subdir",
+    notes_subdir = NOTES_SUBDIR,
+
+    mappings = {
+      ["<CR>"] = {
+        action = function()
+          return require("obsidian").util.smart_action()
+        end,
+        opts = { buffer = true, expr = true },
+      },
+    },
+
+    picker = {
+      name = "telescope",
+      note_mappings = {
+        new = "<C-x>",
+        insert_link = "<C-l>",
+      },
+      tag_mappings = {
+        tag_note = "<C-x>",
+        insert_tag = "<C-l>",
+      },
+    },
+
+    -- BLINK MIGRATION NOTE:
+    -- We keep `nvim_cmp = true` here even though we use blink.
+    -- `blink.compat` will "mock" cmp so obsidian registers the sources correctly.
+    completion = {
+      nvim_cmp = true,
+      min_chars = 2,
+    },
+
+    note_id_func = function(title)
+      local function sanitize(name)
+        if not name then
+          return ""
+        end
+        name = vim.trim(name)
+        return name:gsub('[%c/\\?*:|"<>#%%^%[%]]', "")
+      end
+
+      local function safe_input(prompt, default)
+        local ok, result = pcall(vim.fn.input, prompt, default)
+        if not ok then
+          return nil
+        end
+        return result
+      end
+
+      local mode = vim.api.nvim_get_mode().mode
+      if mode:sub(1, 1) == "i" then
+        if title then
+          return sanitize(title)
+        else
+          return tostring(os.time())
+        end
+      end
+
+      local candidate = title
+      if not candidate or candidate == "" then
+        local attempts = 0
+        local max_attempts = 3
+        while true do
+          candidate = safe_input("Enter Note Title: ")
+          if candidate and candidate ~= "" then
+            break
+          end
+          attempts = attempts + 1
+          if attempts >= max_attempts then
+            return tostring(os.time())
+          end
+        end
+      end
+      return sanitize(candidate)
+    end,
+
+    -- 🔥 FIX: Force note paths to be strings to prevent Plenary Path concatenation bugs
+    note_path_func = function(spec)
+      local existing_path = find_existing_note_path(spec.id)
+      if existing_path then
+        return tostring(Path:new(existing_path))
+      else
+        local filename = tostring(spec.id)
+        if not filename:match("%.md$") then
+          filename = filename .. ".md"
+        end
+        return tostring(spec.dir / filename)
+      end
+    end,
+
+    note_frontmatter_func = function(note)
+      if not note then
+        return { id = tostring(os.time()), aliases = {}, tags = {} }
+      end
+
+      local function dedupe(t)
+        if not t or type(t) ~= "table" then
+          return {}
+        end
+        local seen = {}
+        local res = {}
+        for _, v in ipairs(t) do
+          if not seen[v] then
+            res[#res + 1] = v
+            seen[v] = true
+          end
+        end
+        return res
+      end
+
+      -- FIX: Ensure path is a Plenary Path object before checking existence
+      local path_exists = false
+      if note.path then
+        local path_obj = note.path
+        if type(path_obj) == "string" then
+          path_obj = Path:new(path_obj)
+        end
+        pcall(function()
+          path_exists = path_obj:exists()
+        end)
+      end
+
+      -- NOTE EXISTS: Merge metadata and preserve
+      if path_exists then
+        local out = {}
+        if note.metadata then
+          for k, v in pairs(note.metadata) do
+            out[k] = v
+          end
+        end
+        out.tags = dedupe(note.tags or {})
+        out.aliases = dedupe(note.aliases or {})
+
+        if note.id then
+          out.id = note.id
+          if not note.id:match("^%d%d%d%d%-%d%d%-%d%d$") then
+            local title_text = note.id:gsub("[-_]", " ")
+            out.title = title_text:gsub("(%a)([%w_']*)", function(f, r)
+              return f:upper() .. r:lower()
+            end)
+          else
+            out.title = note.id
+          end
+        end
+        out.updated = os.date("%Y-%m-%d %H:%M")
+        return out
+      end
+
+      -- NEW NOTE: Create from scratch
+      local out = {
+        id = note.id,
+        aliases = note.aliases or {},
+        tags = note.tags or {},
+        date = os.date("%Y-%m-%d"),
+        updated = os.date("%Y-%m-%d %H:%M"),
+      }
+
+      -- 🔥 FEATURE: Sequential Note Numbering (Applies to ALL new notes, including Daily Notes)
+      local count = 0
+      local cmd = "rg --files --no-ignore --glob '*.md' " .. vim.fn.shellescape(VAULT_PATH) .. " | wc -l"
+      local ok, handle = pcall(io.popen, cmd)
+      if ok and handle then
+        local result = handle:read("*a")
+        handle:close()
+        count = tonumber(result:match("%d+")) or 0
+      end
+      table.insert(out.aliases, tostring(count + 1))
+
+      -- Title derivation
+      if note.title and note.title ~= note.id then
+        out.title = note.title
+      else
+        local id_filename = note.id:match("([^/]+)$") or note.id
+        if not id_filename:match("^%d%d%d%d%-%d%d%-%d%d$") then
+          id_filename = id_filename:gsub("[-_]", " ")
+        end
+        out.title = id_filename:gsub("^%l", string.upper)
+      end
+
+      out.aliases = dedupe(out.aliases)
+      out.tags = dedupe(out.tags)
+      note.title = nil
+      return out
+    end,
+
+    preferred_link_style = "wiki",
+    wiki_link_func = function(opts)
+      if opts.id == opts.label then
+        return string.format("[[%s]]", opts.id)
+      elseif opts.label ~= opts.id then
+        return string.format("[[%s|%s]]", opts.id, opts.label)
+      end
+    end,
+
+    daily_notes = {
+      folder = DAILY_NOTES_FOLDER,
+      date_format = "%Y-%m-%d",
+      --template = "daily-note.md",
+    },
+
+    attachments = {
+      img_folder = IMG_FOLDER,
+      img_name_func = function()
+        return string.format("Pasted-%s", os.date("%Y-%m-%d-%H%M%S"))
+      end,
+    },
+
+    follow_url_func = function(url)
+      vim.fn.jobstart({ "xdg-open", url }, { detach = true })
+    end,
+
+    templates = {
+      folder = TEMPLATES_FOLDER,
+      date_format = "%d-%m-%Y",
+      time_format = "%H:%M",
+    },
+
+    callbacks = {
+      pre_write_note = function(client, note)
+        local now = os.date("%Y-%m-%d %H:%M")
+        if note.id ~= note.title then
+          note:add_alias(note.id)
+        end
+        note:add_field("updated", now)
+      end,
+    },
+  },
+}
